@@ -4,6 +4,7 @@ Listo para producción en EasyPanel/Docker.
 """
 import os
 import asyncio
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,11 +17,33 @@ load_dotenv(override=True)
 
 from agent import create_agent
 
+# Variables globales
+agent = None
+threads = {}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Inicializa el agente al arrancar y limpia al cerrar."""
+    global agent
+    try:
+        agent = await create_agent()
+        print("✅ Agente inicializado correctamente")
+    except Exception as e:
+        print(f"⚠️ Error al inicializar agente: {e}")
+        print("El servidor seguirá funcionando, pero /chat dará error hasta configurar OPENAI_API_KEY")
+    yield
+    # Cleanup
+    agent = None
+    threads.clear()
+
+
 # FastAPI app
 app = FastAPI(
     title="Agente MAF API",
     description="API del Agente Inteligente con Microsoft Agent Framework",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS para permitir requests desde cualquier origen
@@ -44,22 +67,6 @@ class ChatResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
-
-# Variables globales
-agent = None
-threads = {}
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Inicializa el agente al arrancar el servidor."""
-    global agent
-    try:
-        agent = await create_agent()
-        print("✅ Agente inicializado correctamente")
-    except Exception as e:
-        print(f"⚠️ Error al inicializar agente: {e}")
-        print("El servidor seguirá funcionando, pero /chat dará error hasta configurar OPENAI_API_KEY")
 
 
 @app.get("/", response_model=HealthResponse)
