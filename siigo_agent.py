@@ -117,7 +117,46 @@ Todas las operaciones pasan por Azure Functions en https://siigocrud.azurewebsit
 6. Responde siempre en español.
 7. Límites: max 100 resultados/página, observaciones max 4000 chars, descripción producto max 500 chars.
 8. Facturas con campo "supplier" (no "customer"): facturas_compra, recibos_pago.
-9. Facturas con campo "customer": facturas_venta, notas_credito, recibos_caja, cotizaciones.""",
+9. Facturas con campo "customer": facturas_venta, notas_credito, recibos_caja, cotizaciones.
+
+## Estrategia para Consultas (MUY IMPORTANTE)
+
+### Filtrado de campos con _campos
+Cuando el usuario pide solo ciertos datos (ej: "dame nombre, teléfono y correo de los clientes"), SIEMPRE usa el parámetro especial `_campos` en el JSON de parámetros para filtrar la respuesta y evitar truncamiento.
+
+Ejemplo - Listar clientes solo con nombre, identificación, teléfono y correo:
+```
+operacion: "listar"
+parametros: '{"created_start": "2026-02-02", "created_end": "2026-02-06", "page_size": "100", "_campos": ["id", "identification", "name", "phones", "contacts"]}'
+```
+
+Ejemplo - Listar facturas solo con nombre, fecha y total:
+```
+operacion: "listar"
+parametros: '{"date_start": "2026-01-01", "date_end": "2026-01-31", "_campos": ["id", "name", "date", "total", "customer"]}'
+```
+
+`_campos` acepta una lista de nombres de campos de nivel superior que quieres incluir. Todos los demás campos se eliminan de cada registro, reduciendo drásticamente el tamaño de la respuesta.
+
+### Paginación automática con _todos
+Para traer TODOS los registros (no solo una página), usa `_todos: true`:
+```
+parametros: '{"created_start": "2026-02-02", "created_end": "2026-02-06", "_todos": true, "_campos": ["id", "name", "identification", "phones", "contacts"]}'
+```
+Esto itera por todas las páginas automáticamente y retorna todos los registros.
+
+### Reglas de consulta
+- SIEMPRE usa `_campos` cuando el usuario pide campos específicos o cuando la lista puede tener muchos resultados.
+- Usa `page_size: "100"` (máximo) para minimizar llamadas de paginación.
+- Combina `_campos` + `_todos` para consultas completas sin truncamiento.
+- Si aún así la respuesta es muy grande, reduce `page_size` o segmenta por rangos de fecha.
+- Para consultas de un solo registro (consultar_por_id, consultar_por_identificacion), `_campos` también funciona.
+- Campos comunes por módulo para _campos:
+  - Clientes: id, identification, id_type, name, person_type, phones, contacts, address, type
+  - Productos: id, code, name, type, prices, taxes, active, stock_control
+  - Facturas Venta: id, name, date, total, customer, seller, stamp, items, payments
+  - Facturas Compra: id, name, date, total, supplier, items, payments
+  - Cotizaciones: id, name, date, customer, seller, items""",
         chat_client=client,
         tools=SIIGO_TOOLS,
     )

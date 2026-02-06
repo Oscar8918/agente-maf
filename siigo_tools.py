@@ -37,9 +37,10 @@ SIIGO_FUNCTION_KEY = os.getenv("SIIGO_FUNCTION_KEY", "")
 # ==================== HELPER ====================
 
 def _call_siigo(endpoint: str, operacion: str, method: str = "GET",
-                query_params: dict = None, body: dict = None) -> str:
+                query_params: dict = None, body: dict = None) -> dict:
     """
     Llama a una Azure Function de SIIGO CRUD.
+    Retorna la respuesta como dict/list (no string) para post-procesamiento.
     """
     url = f"{SIIGO_BASE_URL}/{endpoint}"
     
@@ -63,25 +64,19 @@ def _call_siigo(endpoint: str, operacion: str, method: str = "GET",
         elif method == "DELETE":
             resp = requests.delete(url, params=params, timeout=30)
         else:
-            return json.dumps({"error": f"Método HTTP no soportado: {method}"})
+            return {"error": f"Método HTTP no soportado: {method}"}
         
         try:
-            data = resp.json()
+            return resp.json()
         except Exception:
-            data = {"raw_response": resp.text, "status_code": resp.status_code}
-        
-        response_str = json.dumps(data, ensure_ascii=False, indent=2)
-        if len(response_str) > 8000:
-            response_str = response_str[:8000] + "\n... (respuesta truncada por tamaño)"
-        
-        return response_str
+            return {"raw_response": resp.text, "status_code": resp.status_code}
         
     except requests.exceptions.Timeout:
-        return json.dumps({"error": "Timeout: La solicitud tardó demasiado"})
+        return {"error": "Timeout: La solicitud tardó demasiado"}
     except requests.exceptions.ConnectionError:
-        return json.dumps({"error": "Error de conexión con el servidor de SIIGO"})
+        return {"error": "Error de conexión con el servidor de SIIGO"}
     except Exception as e:
-        return json.dumps({"error": f"Error inesperado: {str(e)}"})
+        return {"error": f"Error inesperado: {str(e)}"}
 
 
 def _detect_method(operacion: str) -> str:
@@ -107,13 +102,78 @@ def _parse_parametros(parametros_json: str) -> dict:
         return {}
 
 
+def _filter_response_fields(data, campos: list) -> any:
+    """
+    Filtra la respuesta para incluir solo los campos de nivel superior especificados.
+    Soporta respuestas con formato {"results": [...], "pagination": {...}} y listas planas.
+    """
+    def filter_record(record):
+        if not isinstance(record, dict):
+            return record
+        return {k: v for k, v in record.items() if k in campos}
+    
+    if isinstance(data, dict):
+        if "results" in data:
+            filtered = {}
+            if "pagination" in data:
+                filtered["pagination"] = data["pagination"]
+            filtered["results"] = [filter_record(r) for r in data.get("results", [])]
+            return filtered
+        else:
+            return filter_record(data)
+    elif isinstance(data, list):
+        return [filter_record(r) for r in data]
+    return data
+
+
+def _to_response_str(data, max_chars: int = 15000) -> str:
+    """Convierte data a JSON string con truncamiento inteligente."""
+    response_str = json.dumps(data, ensure_ascii=False, indent=2)
+    if len(response_str) > max_chars:
+        # Para listas con resultados, intentar contar registros completos
+        if isinstance(data, dict) and "results" in data and isinstance(data["results"], list):
+            results = data["results"]
+            pagination = data.get("pagination", {})
+            total = pagination.get("total_results", len(results))
+            # Reducir registros hasta que quepa
+            while len(results) > 1:
+                test = {"pagination": pagination, "results": results, "_nota": f"Mostrando {len(results)} de {total} registros"}
+                test_str = json.dumps(test, ensure_ascii=False, indent=2)
+                if len(test_str) <= max_chars:
+                    return test_str
+                results = results[:-1]
+            # Si un solo registro es demasiado grande, truncar
+            response_str = json.dumps(
+                {"pagination": pagination, "results": results, "_nota": f"Mostrando 1 de {total} registros (use _campos para reducir tamaño o page_size más pequeño)"},
+                ensure_ascii=False, indent=2
+            )
+        if len(response_str) > max_chars:
+            response_str = response_str[:max_chars] + "\n... (respuesta truncada)"
+    return response_str
+
+
 def _execute_siigo_tool(endpoint: str, operacion: str, parametros_json: str) -> str:
     """
     Ejecuta una operación SIIGO determinando automáticamente el método HTTP
     y separando parámetros de query vs body.
+    
+    Soporta parámetros especiales en el JSON:
+    - _campos: lista de campos a incluir en la respuesta (ej: ["id","name","identification","phones","contacts"])
+    - _todos: true para paginar automáticamente y traer TODOS los registros (solo GET listar)
     """
     method = _detect_method(operacion)
     params = _parse_parametros(parametros_json)
+    
+    # Extraer parámetros especiales (no van al API)
+    campos = None
+    if "_campos" in params:
+        campos_raw = params.pop("_campos")
+        if isinstance(campos_raw, list):
+            campos = campos_raw
+        elif isinstance(campos_raw, str):
+            campos = [c.strip() for c in campos_raw.split(",")]
+    
+    paginar_todo = params.pop("_todos", False)
     
     if method in ("POST", "PUT"):
         query_params = {}
@@ -121,11 +181,51 @@ def _execute_siigo_tool(endpoint: str, operacion: str, parametros_json: str) -> 
         for key in ["id", "nombre", "identificacion", "codigo", "nombre_factura"]:
             if key in body:
                 query_params[key] = body.pop(key)
-        return _call_siigo(endpoint, operacion, method, query_params=query_params, body=body)
+        data = _call_siigo(endpoint, operacion, method, query_params=query_params, body=body)
     elif method == "DELETE":
-        return _call_siigo(endpoint, operacion, method, query_params=params)
+        data = _call_siigo(endpoint, operacion, method, query_params=params)
     else:
-        return _call_siigo(endpoint, operacion, method, query_params=params)
+        # GET - soportar paginación automática
+        if paginar_todo:
+            all_results = []
+            page = int(params.get("page", 1))
+            page_size = int(params.get("page_size", 25))
+            params["page_size"] = str(page_size)
+            max_pages = 20  # Límite de seguridad
+            
+            for _ in range(max_pages):
+                params["page"] = str(page)
+                page_data = _call_siigo(endpoint, operacion, method, query_params=params)
+                
+                if isinstance(page_data, dict) and "error" in page_data:
+                    return _to_response_str(page_data)
+                
+                if isinstance(page_data, dict) and "results" in page_data:
+                    results = page_data.get("results", [])
+                    all_results.extend(results)
+                    pagination = page_data.get("pagination", {})
+                    total = pagination.get("total_results", 0)
+                    if len(all_results) >= total or len(results) < page_size:
+                        break
+                    page += 1
+                else:
+                    # Respuesta sin formato estándar, retornar tal cual
+                    if campos:
+                        page_data = _filter_response_fields(page_data, campos)
+                    return _to_response_str(page_data)
+            
+            data = {
+                "pagination": {"total_results": len(all_results), "page": 1, "page_size": len(all_results)},
+                "results": all_results
+            }
+        else:
+            data = _call_siigo(endpoint, operacion, method, query_params=params)
+    
+    # Aplicar filtro de campos si se especificó
+    if campos and not isinstance(data, str):
+        data = _filter_response_fields(data, campos)
+    
+    return _to_response_str(data)
 
 
 # ==================== TOOLS ====================
@@ -149,7 +249,8 @@ Ejemplo: Para obtener tipos de factura de venta: catalogo='tipos_comprobante', p
     """Consulta catálogos maestros de Siigo Nube (solo lectura). Usa esto PRIMERO para obtener IDs necesarios para crear documentos: document.id (tipos_comprobante), seller (usuarios), payments.id (formas_pago), taxes.id (impuestos), cost_center (centros_costo), warehouse (bodegas)."""
     params = _parse_parametros(parametros)
     params["catalogo"] = catalogo
-    return _call_siigo("catalogos", catalogo, "GET", query_params=params)
+    data = _call_siigo("catalogos", catalogo, "GET", query_params=params)
+    return _to_response_str(data)
 
 
 # 2. CLIENTES
@@ -172,6 +273,12 @@ PUT:
 GET listar: {"page": "1", "page_size": "25"}
 GET consultar_por_id: {"id": "12345"}
 GET consultar_por_identificacion: {"identificacion": "900123456"}
+
+⭐ FILTRO DE CAMPOS (_campos): Para traer solo campos específicos y evitar truncamiento:
+{"created_start": "2026-02-02", "created_end": "2026-02-06", "page_size": "100", "_campos": ["id", "identification", "name", "phones", "contacts"]}
+
+⭐ TRAER TODOS (_todos): Para paginar automáticamente y traer todos los registros:
+{"created_start": "2026-02-02", "created_end": "2026-02-06", "_todos": true, "_campos": ["id", "identification", "name", "phones", "contacts"]}
 
 POST crear - CAMPOS OBLIGATORIOS:
 {
@@ -221,6 +328,9 @@ DELETE:
 GET listar: {"page": "1", "page_size": "25"}
 GET consultar_por_id: {"id": "12345"}
 GET consultar_por_codigo: {"codigo": "PROD001"}
+
+⭐ FILTRO DE CAMPOS: {"page_size": "100", "_campos": ["id", "code", "name", "type", "prices", "active"]}
+⭐ TRAER TODOS: {"_todos": true, "_campos": ["id", "code", "name", "type", "prices"]}
 
 POST crear - CAMPOS OBLIGATORIOS:
 {
@@ -275,6 +385,9 @@ GET listar: {"page": "1", "page_size": "25", "date_start": "2024-01-01", "date_e
 GET consultar_por_id: {"id": "abc123"}
 GET consultar_por_nombre: {"nombre": "FV-003-457"}
 GET pdf/xml/errores_dian: {"id": "abc123"}
+
+⭐ FILTRO DE CAMPOS: {"date_start": "2026-01-01", "date_end": "2026-01-31", "page_size": "100", "_campos": ["id", "name", "date", "total", "customer", "stamp"]}
+⭐ TRAER TODOS: {"date_start": "2026-01-01", "date_end": "2026-01-31", "_todos": true, "_campos": ["id", "name", "date", "total", "customer"]}
 
 POST crear - CAMPOS OBLIGATORIOS:
 {
@@ -341,6 +454,9 @@ DELETE:
 GET listar: {"page": "1", "page_size": "25", "date_start": "2024-01-01", "date_end": "2024-12-31"}
 GET consultar_por_id: {"id": "abc123"}
 GET consultar_por_nombre: {"nombre": "FC-1-22"}
+
+⭐ FILTRO DE CAMPOS: {"date_start": "2026-01-01", "date_end": "2026-01-31", "page_size": "100", "_campos": ["id", "name", "date", "total", "supplier"]}
+⭐ TRAER TODOS: {"date_start": "2026-01-01", "date_end": "2026-01-31", "_todos": true, "_campos": ["id", "name", "date", "total", "supplier"]}
 
 POST crear - CAMPOS OBLIGATORIOS:
 {
