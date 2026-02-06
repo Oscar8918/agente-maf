@@ -10,7 +10,7 @@ from siigo_tools import SIIGO_TOOLS
 
 # Instancia global del sub-agente SIIGO
 _siigo_agent = None
-_siigo_thread = None
+_siigo_threads = {}  # thread_id → siigo_thread (per-usuario)
 
 
 async def _get_siigo_agent() -> ChatAgent:
@@ -164,28 +164,36 @@ Esto itera por todas las páginas automáticamente y retorna todos los registros
     return _siigo_agent
 
 
-async def run_siigo_agent(query: str) -> str:
+async def run_siigo_agent(query: str, thread_id: str = "default") -> str:
     """
     Ejecuta el sub-agente SIIGO con una consulta y retorna la respuesta.
-    Usa un thread dedicado para mantener contexto entre llamadas.
+    Usa threads separados por thread_id para aislar contexto entre usuarios.
     """
-    global _siigo_thread
+    global _siigo_threads
     
     agent = await _get_siigo_agent()
     
-    if _siigo_thread is None:
-        _siigo_thread = agent.get_new_thread()
+    if thread_id not in _siigo_threads:
+        _siigo_threads[thread_id] = agent.get_new_thread()
+    
+    thread = _siigo_threads[thread_id]
     
     response_text = ""
-    async for chunk in agent.run_stream(query, thread=_siigo_thread):
+    async for chunk in agent.run_stream(query, thread=thread):
         if chunk.text:
             response_text += chunk.text
     
     return response_text
 
 
+def reset_siigo_thread(thread_id: str):
+    """Elimina el thread SIIGO de un usuario específico."""
+    global _siigo_threads
+    _siigo_threads.pop(thread_id, None)
+
+
 def reset_siigo_agent():
-    """Resetea el sub-agente (para limpiar estado)."""
-    global _siigo_agent, _siigo_thread
+    """Resetea el sub-agente completo (para limpiar todo el estado)."""
+    global _siigo_agent, _siigo_threads
     _siigo_agent = None
-    _siigo_thread = None
+    _siigo_threads = {}

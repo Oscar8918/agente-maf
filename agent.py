@@ -4,10 +4,14 @@ Delega operaciones de Siigo Nube al sub-agente SIIGO especializado.
 """
 import os
 import asyncio
+import contextvars
 from typing import Annotated
 from agent_framework import ChatAgent
 from agent_framework.openai import OpenAIChatClient
 from siigo_agent import run_siigo_agent
+
+# ContextVar para pasar el thread_id actual a las tools del agente
+current_thread_id = contextvars.ContextVar("current_thread_id", default="default")
 
 
 # ==================== HERRAMIENTAS GENERALES ====================
@@ -57,7 +61,8 @@ async def consultar_siigo_erp(
     consulta: Annotated[str, "Descripción detallada de lo que se necesita hacer en Siigo Nube. Incluir toda la información relevante: módulo (clientes, productos, facturas, etc.), operación (listar, crear, editar, consultar, eliminar), y datos necesarios (IDs, nombres, filtros, campos del registro, etc.)."],
 ) -> str:
     """Delega al sub-agente especializado en Siigo Nube ERP. Usa esta herramienta para CUALQUIER operación con Siigo: gestionar clientes, productos, facturas de venta/compra, notas crédito, cotizaciones, recibos de caja/pago, comprobantes contables, cuentas por pagar, categorías de inventario, y consultar catálogos (impuestos, bodegas, formas de pago, etc.)."""
-    return await run_siigo_agent(consulta)
+    tid = current_thread_id.get()
+    return await run_siigo_agent(consulta, thread_id=tid)
 
 
 # ==================== TODAS LAS HERRAMIENTAS ====================
