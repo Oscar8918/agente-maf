@@ -99,6 +99,17 @@ def _ensure_schema():
                 )
                 """
             )
+            # Migraciones para instalaciones existentes (v1 -> v2)
+            cur.execute(f"ALTER TABLE {schema}.conversaciones ADD COLUMN IF NOT EXISTS user_id VARCHAR(100)")
+            cur.execute(f"ALTER TABLE {schema}.conversaciones ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb")
+            cur.execute(
+                f"""ALTER TABLE {schema}.conversaciones
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"""
+            )
+            cur.execute(
+                f"""ALTER TABLE {schema}.conversaciones
+                    ADD COLUMN IF NOT EXISTS last_activity TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"""
+            )
 
             cur.execute(
                 f"""
@@ -110,6 +121,10 @@ def _ensure_schema():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
+            )
+            cur.execute(
+                f"""ALTER TABLE {schema}.mensajes
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"""
             )
 
             cur.execute(
@@ -130,6 +145,23 @@ def _ensure_schema():
                 )
                 """
             )
+            cur.execute(f"ALTER TABLE {schema}.tool_events ADD COLUMN IF NOT EXISTS thread_id TEXT")
+            cur.execute(f"ALTER TABLE {schema}.tool_events ADD COLUMN IF NOT EXISTS user_id VARCHAR(100)")
+            cur.execute(f"ALTER TABLE {schema}.tool_events ADD COLUMN IF NOT EXISTS tool_name VARCHAR(120)")
+            cur.execute(f"ALTER TABLE {schema}.tool_events ADD COLUMN IF NOT EXISTS endpoint VARCHAR(200)")
+            cur.execute(f"ALTER TABLE {schema}.tool_events ADD COLUMN IF NOT EXISTS operation VARCHAR(80)")
+            cur.execute(
+                f"""ALTER TABLE {schema}.tool_events
+                    ADD COLUMN IF NOT EXISTS request_payload JSONB NOT NULL DEFAULT '{{}}'::jsonb"""
+            )
+            cur.execute(f"ALTER TABLE {schema}.tool_events ADD COLUMN IF NOT EXISTS response_status INTEGER")
+            cur.execute(f"ALTER TABLE {schema}.tool_events ADD COLUMN IF NOT EXISTS success BOOLEAN NOT NULL DEFAULT FALSE")
+            cur.execute(f"ALTER TABLE {schema}.tool_events ADD COLUMN IF NOT EXISTS duration_ms INTEGER")
+            cur.execute(f"ALTER TABLE {schema}.tool_events ADD COLUMN IF NOT EXISTS error_text TEXT")
+            cur.execute(
+                f"""ALTER TABLE {schema}.tool_events
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"""
+            )
 
             cur.execute(
                 f"""
@@ -146,6 +178,18 @@ def _ensure_schema():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
+            )
+            cur.execute(f"ALTER TABLE {schema}.agent_runs ADD COLUMN IF NOT EXISTS thread_id TEXT")
+            cur.execute(f"ALTER TABLE {schema}.agent_runs ADD COLUMN IF NOT EXISTS user_id VARCHAR(100)")
+            cur.execute(f"ALTER TABLE {schema}.agent_runs ADD COLUMN IF NOT EXISTS model_id VARCHAR(100)")
+            cur.execute(f"ALTER TABLE {schema}.agent_runs ADD COLUMN IF NOT EXISTS input_message TEXT")
+            cur.execute(f"ALTER TABLE {schema}.agent_runs ADD COLUMN IF NOT EXISTS output_message TEXT")
+            cur.execute(f"ALTER TABLE {schema}.agent_runs ADD COLUMN IF NOT EXISTS success BOOLEAN NOT NULL DEFAULT FALSE")
+            cur.execute(f"ALTER TABLE {schema}.agent_runs ADD COLUMN IF NOT EXISTS duration_ms INTEGER")
+            cur.execute(f"ALTER TABLE {schema}.agent_runs ADD COLUMN IF NOT EXISTS error_text TEXT")
+            cur.execute(
+                f"""ALTER TABLE {schema}.agent_runs
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"""
             )
 
             cur.execute(f"CREATE INDEX IF NOT EXISTS idx_conv_last_activity ON {schema}.conversaciones(last_activity)")
