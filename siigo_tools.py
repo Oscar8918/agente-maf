@@ -35,6 +35,9 @@ from runtime_context import current_thread_id, current_user_id
 
 SIIGO_BASE_URL = os.getenv("SIIGO_AZURE_FUNCTIONS_URL", "https://siigocrud.azurewebsites.net/api")
 SIIGO_FUNCTION_KEY = os.getenv("SIIGO_FUNCTION_KEY", "")
+SIIGO_USERNAME = os.getenv("SIIGO_USERNAME", "")
+SIIGO_ACCESS_KEY = os.getenv("SIIGO_ACCESS_KEY", "")
+SIIGO_DEBUG = os.getenv("SIIGO_DEBUG", "false").lower() == "true"
 
 
 def _safe_log_tool_event(**kwargs):
@@ -45,6 +48,15 @@ def _safe_log_tool_event(**kwargs):
     except Exception:
         # No romper la operación de negocio por fallas de observabilidad.
         pass
+
+
+def _mask_secret(value: str, visible: int = 4) -> str:
+    """Enmascara secretos en logs de depuración."""
+    if not value:
+        return ""
+    if len(value) <= visible:
+        return "*" * len(value)
+    return f"{value[:visible]}{'*' * (len(value) - visible)}"
 
 
 # ==================== HELPER ====================
@@ -61,6 +73,13 @@ def _call_siigo(endpoint: str, operacion: str, method: str = "GET",
         "code": SIIGO_FUNCTION_KEY,
         "operacion": operacion,
     }
+
+    # Compatibilidad con versiones de Azure Function que exigen credenciales SIIGO
+    # por query string en cada request.
+    if SIIGO_USERNAME:
+        params["username"] = SIIGO_USERNAME
+    if SIIGO_ACCESS_KEY:
+        params["access_key"] = SIIGO_ACCESS_KEY
     
     if query_params:
         params.update(query_params)
@@ -71,6 +90,14 @@ def _call_siigo(endpoint: str, operacion: str, method: str = "GET",
 
     try:
         headers = {"Content-Type": "application/json"} if body else {}
+
+        if SIIGO_DEBUG:
+            debug_params = dict(params)
+            if "code" in debug_params:
+                debug_params["code"] = _mask_secret(debug_params["code"])
+            if "access_key" in debug_params:
+                debug_params["access_key"] = _mask_secret(debug_params["access_key"])
+            print(f"[SIIGO_DEBUG] -> {method} {url} params={debug_params}")
         
         if method == "GET":
             resp = requests.get(url, params=params, timeout=30)
@@ -100,6 +127,23 @@ def _call_siigo(endpoint: str, operacion: str, method: str = "GET",
             data = resp.json()
         except Exception:
             data = {"raw_response": resp.text, "status_code": resp.status_code}
+
+        if SIIGO_DEBUG:
+            body_len = len(resp.text or "")
+            print(f"[SIIGO_DEBUG] <- status={resp.status_code} body_len={body_len}")
+
+        # Señaliza de forma explícita respuestas vacías para evitar ambigüedad.
+        if (resp.text or "").strip() == "":
+            if resp.status_code >= 400:
+                data = {
+                    "error": f"HTTP {resp.status_code} desde Azure Function (respuesta vacía)",
+                    "status_code": resp.status_code,
+                }
+            else:
+                data = {
+                    "error": "Azure Function respondió vacío",
+                    "status_code": resp.status_code,
+                }
 
         success = resp.ok and not (isinstance(data, dict) and "error" in data)
         _safe_log_tool_event(
@@ -183,7 +227,7 @@ def _parse_parametros(parametros_json: str) -> dict:
     try:
         return json.loads(parametros_json)
     except json.JSONDecodeError:
-        return {}
+        return {"_parse_error": "parametros_json_invalido"}
 
 
 def _filter_response_fields(data, campos: list) -> any:
@@ -247,6 +291,15 @@ def _execute_siigo_tool(endpoint: str, operacion: str, parametros_json: str) -> 
     """
     method = _detect_method(operacion)
     params = _parse_parametros(parametros_json)
+
+    if "_parse_error" in params:
+        return _to_response_str(
+            {
+                "error": "El JSON de parametros es inválido",
+                "detalle": "Asegúrate de enviar un objeto JSON válido en formato string.",
+                "status_code": 400,
+            }
+        )
     
     # Extraer parámetros especiales (no van al API)
     campos = None
