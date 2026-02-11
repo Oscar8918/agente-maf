@@ -7,9 +7,11 @@
 - ✅ Servidor HTTP REST listo para producción
 - ✅ Múltiples herramientas (clima, búsqueda, calculadora, hora)
 - ✅ Conversaciones con memoria (threads)
+- ✅ Persistencia y auto-migración PostgreSQL (`agentes.*`)
+- ✅ Auditoría de tools y corridas del agente (`tool_events`, `agent_runs`)
 - ✅ Docker optimizado para EasyPanel
 - ✅ OpenAI API (gpt-4o-mini, gpt-4o, etc.)
-- ✅ Health checks integrados
+- ✅ Health checks y métricas operativas (`/health`, `/metrics`)
 
 ## Requisitos Previos
 
@@ -37,6 +39,11 @@ En la sección **Environment** de tu app en EasyPanel, agrega:
 OPENAI_API_KEY=sk-tu-api-key-aqui
 MODEL_ID=gpt-4o-mini
 PORT=8000
+DB_HOST=tu-servidor.postgres.database.azure.com
+DB_NAME=tu_base
+DB_USER=tu_usuario
+DB_PASSWORD=tu_password
+DB_SSLMODE=require
 ```
 
 ### 3. Configurar Puerto
@@ -67,14 +74,20 @@ Enviar mensaje al agente
 ```bash
 curl -X POST https://tu-dominio.com/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "¿Cuál es el clima en Madrid?"}'
+  -d '{"message": "¿Cuál es el clima en Madrid?", "user_id": "u-123"}'
 ```
 
 **Con thread (conversación continua):**
 ```bash
 curl -X POST https://tu-dominio.com/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "¿Y en Barcelona?", "thread_id": "mi-thread-123"}'
+  -d '{"message": "¿Y en Barcelona?", "thread_id": "mi-thread-123", "user_id": "u-123"}'
+```
+
+### GET /metrics
+Métricas operativas básicas (24h y acumuladas)
+```bash
+curl https://tu-dominio.com/metrics
 ```
 
 ### DELETE /threads/{thread_id}
@@ -125,6 +138,8 @@ Cambia `MODEL_ID` en las variables de entorno para usar otro modelo.
 agente-maf/
 ├── main.py           # Servidor HTTP FastAPI
 ├── agent.py          # Configuración del agente y herramientas
+├── db.py             # Persistencia PostgreSQL + observabilidad
+├── runtime_context.py # Correlación thread/user entre tools
 ├── requirements.txt  # Dependencias Python
 ├── Dockerfile        # Imagen Docker para EasyPanel
 ├── .env.example      # Variables de entorno de ejemplo

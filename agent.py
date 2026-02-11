@@ -4,14 +4,11 @@ Delega operaciones de Siigo Nube al sub-agente SIIGO especializado.
 """
 import os
 import asyncio
-import contextvars
 from typing import Annotated
 from agent_framework import ChatAgent
 from agent_framework.openai import OpenAIChatClient
 from siigo_agent import run_siigo_agent
-
-# ContextVar para pasar el thread_id actual a las tools del agente
-current_thread_id = contextvars.ContextVar("current_thread_id", default="default")
+from runtime_context import current_thread_id
 
 
 # ==================== HERRAMIENTAS GENERALES ====================

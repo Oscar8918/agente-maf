@@ -28,6 +28,7 @@ env/
 
 # Variables de entorno (nunca subir!)
 .env
+.mcp.json
 
 # IDE
 .idea/

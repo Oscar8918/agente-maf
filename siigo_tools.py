@@ -24,14 +24,27 @@ LÍMITES: Max 100 resultados/página. Observaciones max 4000 chars. Descripción
 """
 import os
 import json
+import time
 import requests
 from typing import Annotated
+import db
+from runtime_context import current_thread_id, current_user_id
 
 
 # ==================== CONFIGURACIÓN ====================
 
 SIIGO_BASE_URL = os.getenv("SIIGO_AZURE_FUNCTIONS_URL", "https://siigocrud.azurewebsites.net/api")
 SIIGO_FUNCTION_KEY = os.getenv("SIIGO_FUNCTION_KEY", "")
+
+
+def _safe_log_tool_event(**kwargs):
+    """Loguea eventos de tools sin interrumpir el flujo principal."""
+    try:
+        if db.is_ready():
+            db.log_tool_event(**kwargs)
+    except Exception:
+        # No romper la operación de negocio por fallas de observabilidad.
+        pass
 
 
 # ==================== HELPER ====================
@@ -52,6 +65,10 @@ def _call_siigo(endpoint: str, operacion: str, method: str = "GET",
     if query_params:
         params.update(query_params)
     
+    started_at = time.perf_counter()
+    thread_id = current_thread_id.get()
+    user_id = current_user_id.get()
+
     try:
         headers = {"Content-Type": "application/json"} if body else {}
         
@@ -64,19 +81,86 @@ def _call_siigo(endpoint: str, operacion: str, method: str = "GET",
         elif method == "DELETE":
             resp = requests.delete(url, params=params, timeout=30)
         else:
-            return {"error": f"Método HTTP no soportado: {method}"}
+            err = {"error": f"Método HTTP no soportado: {method}"}
+            _safe_log_tool_event(
+                thread_id=thread_id,
+                user_id=user_id,
+                tool_name=f"siigo_{endpoint}",
+                endpoint=endpoint,
+                operation=operacion,
+                request_payload={"query": query_params or {}, "body": body or {}},
+                response_status=None,
+                success=False,
+                duration_ms=int((time.perf_counter() - started_at) * 1000),
+                error_text=err["error"],
+            )
+            return err
         
         try:
-            return resp.json()
+            data = resp.json()
         except Exception:
-            return {"raw_response": resp.text, "status_code": resp.status_code}
+            data = {"raw_response": resp.text, "status_code": resp.status_code}
+
+        success = resp.ok and not (isinstance(data, dict) and "error" in data)
+        _safe_log_tool_event(
+            thread_id=thread_id,
+            user_id=user_id,
+            tool_name=f"siigo_{endpoint}",
+            endpoint=endpoint,
+            operation=operacion,
+            request_payload={"query": query_params or {}, "body": body or {}},
+            response_status=resp.status_code,
+            success=success,
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            error_text=(data.get("error") if isinstance(data, dict) else None),
+        )
+        return data
         
     except requests.exceptions.Timeout:
-        return {"error": "Timeout: La solicitud tardó demasiado"}
+        err = {"error": "Timeout: La solicitud tardó demasiado"}
+        _safe_log_tool_event(
+            thread_id=thread_id,
+            user_id=user_id,
+            tool_name=f"siigo_{endpoint}",
+            endpoint=endpoint,
+            operation=operacion,
+            request_payload={"query": query_params or {}, "body": body or {}},
+            response_status=None,
+            success=False,
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            error_text=err["error"],
+        )
+        return err
     except requests.exceptions.ConnectionError:
-        return {"error": "Error de conexión con el servidor de SIIGO"}
+        err = {"error": "Error de conexión con el servidor de SIIGO"}
+        _safe_log_tool_event(
+            thread_id=thread_id,
+            user_id=user_id,
+            tool_name=f"siigo_{endpoint}",
+            endpoint=endpoint,
+            operation=operacion,
+            request_payload={"query": query_params or {}, "body": body or {}},
+            response_status=None,
+            success=False,
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            error_text=err["error"],
+        )
+        return err
     except Exception as e:
-        return {"error": f"Error inesperado: {str(e)}"}
+        err = {"error": f"Error inesperado: {str(e)}"}
+        _safe_log_tool_event(
+            thread_id=thread_id,
+            user_id=user_id,
+            tool_name=f"siigo_{endpoint}",
+            endpoint=endpoint,
+            operation=operacion,
+            request_payload={"query": query_params or {}, "body": body or {}},
+            response_status=None,
+            success=False,
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            error_text=err["error"],
+        )
+        return err
 
 
 def _detect_method(operacion: str) -> str:
