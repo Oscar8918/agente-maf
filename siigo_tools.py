@@ -39,6 +39,21 @@ SIIGO_USERNAME = os.getenv("SIIGO_USERNAME", "")
 SIIGO_ACCESS_KEY = os.getenv("SIIGO_ACCESS_KEY", "")
 SIIGO_DEBUG = os.getenv("SIIGO_DEBUG", "false").lower() == "true"
 
+# Alias para compatibilidad entre versiones de prompts/tools y operaciones
+# reales implementadas en la Azure Function.
+OPERATION_ALIASES = {
+    "facturas_venta": {
+        "tipos_factura_venta": "tipos_factura",
+    },
+    "facturas_compra": {
+        "tipos_factura_compra": "tipos_facturas",
+    },
+    "cuentas_por_pagar": {
+        "consultar_por_proveedor": "por_proveedor",
+        "consultar_por_fecha": "por_fecha",
+    },
+}
+
 
 def _safe_log_tool_event(**kwargs):
     """Loguea eventos de tools sin interrumpir el flujo principal."""
@@ -210,7 +225,7 @@ def _call_siigo(endpoint: str, operacion: str, method: str = "GET",
 def _detect_method(operacion: str) -> str:
     """Detecta el método HTTP según el nombre de la operación."""
     op = operacion.lower()
-    if op in ("crear", "crear_anticipo", "enviar_mail"):
+    if op.startswith("crear") or op in ("enviar_mail",):
         return "POST"
     elif op in ("editar",):
         return "PUT"
@@ -218,6 +233,12 @@ def _detect_method(operacion: str) -> str:
         return "DELETE"
     else:
         return "GET"
+
+
+def _normalize_operation(endpoint: str, operacion: str) -> str:
+    """Normaliza alias de operación al nombre real del backend."""
+    aliases = OPERATION_ALIASES.get(endpoint, {})
+    return aliases.get(operacion, operacion)
 
 
 def _parse_parametros(parametros_json: str) -> dict:
@@ -289,6 +310,7 @@ def _execute_siigo_tool(endpoint: str, operacion: str, parametros_json: str) -> 
     - _campos: lista de campos a incluir en la respuesta (ej: ["id","name","identification","phones","contacts"])
     - _todos: true para paginar automáticamente y traer TODOS los registros (solo GET listar)
     """
+    operacion = _normalize_operation(endpoint, operacion)
     method = _detect_method(operacion)
     params = _parse_parametros(parametros_json)
 
@@ -311,6 +333,17 @@ def _execute_siigo_tool(endpoint: str, operacion: str, parametros_json: str) -> 
             campos = [c.strip() for c in campos_raw.split(",")]
     
     paginar_todo = params.pop("_todos", False)
+
+    # El backend de notas crédito no soporta edición (solo GET/POST).
+    if endpoint == "notas_credito" and operacion == "editar":
+        return _to_response_str(
+            {
+                "error": "Operación no soportada por backend",
+                "detalle": "notas_credito solo permite operaciones GET y POST; no existe editar.",
+                "status_code": 405,
+                "sugerencia": "Crea una nueva nota crédito o realiza ajustes desde Siigo Web.",
+            }
+        )
     
     if method in ("POST", "PUT"):
         query_params = {}
@@ -502,10 +535,12 @@ GET:
 - 'listar': Lista facturas. Params: page, page_size, date_start, date_end, customer_identification, document_id.
 - 'consultar_por_id': Param: id.
 - 'consultar_por_nombre': Param: nombre (ej: 'FV-003-457').
-- 'tipos_factura_venta': Tipos de documento FV disponibles (equivale a tipos_comprobante tipo=FV).
+- 'tipos_factura': Tipos de documento FV disponibles (equivale a tipos_comprobante tipo=FV).
 - 'vendedores': Lista vendedores disponibles.
 - 'formas_pago': Formas de pago disponibles.
 - 'impuestos': Impuestos disponibles.
+- 'clientes': Lista/consulta de clientes para facturación.
+- 'productos': Lista/consulta de productos para facturación.
 - 'pdf': Obtiene PDF de la factura. Param: id.
 - 'xml': Obtiene XML DIAN. Param: id.
 - 'errores_dian': Errores DIAN. Param: id.
@@ -514,8 +549,10 @@ POST:
 - 'enviar_mail': Envía factura por email. Params: id + body con emails.
 PUT:
 - 'editar': Edita factura. Requiere id + campos.
-⚠️ No editar si tiene CUFE (aceptada DIAN), NC, ND o RC asociados.
-⚠️ No se puede DELETE directo; usar anulación mediante nota crédito."""],
+DELETE:
+- 'eliminar': Elimina/anula según validaciones del backend. Param: id.
+- 'anular': Alias explícito para anulación lógica. Param: id.
+⚠️ No editar ni anular si tiene restricciones DIAN o documentos relacionados."""],
     parametros: Annotated[str, """JSON con parámetros según la operación:
 
 GET listar: {"page": "1", "page_size": "25", "date_start": "2024-01-01", "date_end": "2024-12-31"}
@@ -576,7 +613,7 @@ GET:
 - 'listar': Lista facturas compra. Params: page, page_size, date_start, date_end, supplier_identification, document_id, name.
 - 'consultar_por_id': Param: id.
 - 'consultar_por_nombre': Param: nombre (ej: 'FC-1-22').
-- 'tipos_factura_compra': Tipos de documento FC disponibles.
+- 'tipos_facturas': Tipos de documento FC disponibles.
 - 'formas_pago': Formas de pago disponibles.
 - 'impuestos': Impuestos disponibles.
 POST:
@@ -649,10 +686,8 @@ GET:
 - 'pdf': Obtiene PDF. Param: id.
 POST:
 - 'crear': Crea nota crédito. Requiere body JSON.
-PUT:
-- 'editar': Edita NC no enviada a DIAN.
 ⚠️ NO se puede eliminar/DELETE notas crédito.
-⚠️ NO se puede editar si ya fue enviada a la DIAN y tiene CUDE."""],
+⚠️ El backend no soporta editar notas crédito por API (solo GET/POST)."""],
     parametros: Annotated[str, """JSON con parámetros según la operación:
 
 GET listar: {"page": "1", "page_size": "25"}
@@ -772,6 +807,9 @@ GET:
 - 'formas_pago': Formas de pago disponibles.
 POST:
 - 'crear': Crea recibo de caja. Requiere body JSON con type.
+- 'crear_anticipo': Variante explícita para anticipos.
+- 'crear_abono_deuda': Variante explícita para abonos a deuda.
+- 'crear_avanzado': Variante avanzada para payload detallado.
 ⚠️ NO se puede editar (PUT) ni eliminar (DELETE) por API. Solo anular manualmente en Siigo Web."""],
     parametros: Annotated[str, """JSON con parámetros según la operación:
 
@@ -903,6 +941,7 @@ GET:
 - 'consultar_por_nombre': Param: nombre (ej: 'CC-1-22').
 - 'tipos_comprobantes': Tipos de documento CC disponibles.
 - 'cuentas_contables': Lista cuentas contables del PUC.
+- 'activos_fijos': Lista activos fijos disponibles.
 - 'impuestos': Impuestos disponibles.
 - 'centros_costo': Centros de costo.
 POST:
@@ -961,15 +1000,15 @@ POST crear - REGLA FUNDAMENTAL: Total Débitos DEBE ser igual a Total Créditos 
 def siigo_cuentas_por_pagar(
     operacion: Annotated[str, """Operación (SOLO CONSULTA, no se puede crear/editar/eliminar):
 - 'listar': Lista CxP con paginación. Params: page, page_size, due_date_start, due_date_end, provider_identification, provider_branch_office.
-- 'consultar_por_proveedor': CxP de un proveedor específico. Params: identificacion, sucursal (default '0').
-- 'consultar_por_fecha': CxP en rango de fechas. Params: fecha_inicio, fecha_fin.
+- 'por_proveedor': CxP de un proveedor específico. Params: identificacion, sucursal (default '0').
+- 'por_fecha': CxP en rango de fechas. Params: fecha_inicio, fecha_fin.
 - 'vencidas': CxP vencidas a una fecha de corte. Param: fecha_corte (default: hoy). Incluye dias_vencido.
 - 'resumen': Resumen general de CxP. Sin params. Retorna: total_general, total_vencido, total_por_vencer, cantidad_vencimientos, desglose por proveedores.
 ⚠️ Para PAGAR cuentas por pagar, usar la herramienta siigo_recibos_pago."""],
     parametros: Annotated[str, """JSON con parámetros según la operación:
 - listar: {"page": "1", "page_size": "25", "due_date_start": "2024-01-01", "due_date_end": "2024-12-31"}
-- consultar_por_proveedor: {"identificacion": "900123456", "sucursal": "0"}
-- consultar_por_fecha: {"fecha_inicio": "2024-01-01", "fecha_fin": "2024-12-31"}
+- por_proveedor: {"identificacion": "900123456", "sucursal": "0"}
+- por_fecha: {"fecha_inicio": "2024-01-01", "fecha_fin": "2024-12-31"}
 - vencidas: {"fecha_corte": "2024-06-01"}  // Default: hoy
 - resumen: {}
 
