@@ -160,6 +160,24 @@ def _call_siigo(endpoint: str, operacion: str, method: str = "GET",
                     "status_code": resp.status_code,
                 }
 
+        # En operaciones listar, un objeto {} no es una respuesta válida para este conector
+        # (se espera lista o estructura con `results`). Lo tratamos como error explícito para
+        # evitar falsos positivos de éxito.
+        if (
+            method == "GET"
+            and operacion == "listar"
+            and isinstance(data, dict)
+            and not data
+            and resp.ok
+        ):
+            data = {
+                "error": "Azure Function devolvió objeto vacío en operación listar",
+                "status_code": resp.status_code,
+                "endpoint": endpoint,
+                "operacion": operacion,
+                "sugerencia": "Revisar backend SIIGO/credenciales o intentar consulta puntual por ID/código.",
+            }
+
         success = resp.ok and not (isinstance(data, dict) and "error" in data)
         _safe_log_tool_event(
             thread_id=thread_id,
