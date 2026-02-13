@@ -314,10 +314,68 @@ def _filter_response_fields(data, campos: list) -> any:
     - {"success": true, "data": [...]}
     - listas planas
     """
+    def _extract_nested_value(record: dict, dotted_path: str):
+        value = record
+        for part in dotted_path.split("."):
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            else:
+                return None, False
+        return value, True
+
+    def _extract_field_with_aliases(record: dict, field: str):
+        # 1) Campo directo
+        if field in record:
+            return record[field], True
+
+        # 2) Notación punto (ej: metadata.created)
+        if "." in field:
+            return _extract_nested_value(record, field)
+
+        # 3) Alias comunes para respuestas SIIGO
+        metadata = record.get("metadata") if isinstance(record, dict) else None
+        if field == "created_at" and isinstance(metadata, dict):
+            created = metadata.get("created")
+            if created is not None:
+                return created, True
+        if field in ("updated_at", "last_updated") and isinstance(metadata, dict):
+            updated = metadata.get("last_updated")
+            if updated is not None:
+                return updated, True
+
+        # 4) Alias monetarios: en algunos listados viene en payment.value o items[].value
+        if field in ("value", "total"):
+            total = record.get("total")
+            if isinstance(total, (int, float)):
+                return total, True
+
+            payment = record.get("payment")
+            if isinstance(payment, dict):
+                payment_value = payment.get("value")
+                if isinstance(payment_value, (int, float)):
+                    return payment_value, True
+
+            items = record.get("items")
+            if isinstance(items, list):
+                numeric_values = [
+                    item.get("value")
+                    for item in items
+                    if isinstance(item, dict) and isinstance(item.get("value"), (int, float))
+                ]
+                if numeric_values:
+                    return float(sum(numeric_values)), True
+
+        return None, False
+
     def filter_record(record):
         if not isinstance(record, dict):
             return record
-        return {k: v for k, v in record.items() if k in campos}
+        filtered = {}
+        for field in campos:
+            value, found = _extract_field_with_aliases(record, field)
+            if found:
+                filtered[field] = value
+        return filtered
     
     if isinstance(data, dict):
         # Formato común del backend SIIGO: {"success": true, "data": ...}

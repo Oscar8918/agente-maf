@@ -139,7 +139,12 @@ operacion: "listar"
 parametros: '{"date_start": "2026-01-01", "date_end": "2026-01-31", "_campos": ["id", "name", "date", "total", "customer"]}'
 ```
 
-`_campos` acepta una lista de nombres de campos de nivel superior que quieres incluir. Todos los demás campos se eliminan de cada registro, reduciendo drásticamente el tamaño de la respuesta.
+`_campos` acepta nombres de campos de nivel superior y también rutas con punto (ej: `metadata.created`).  
+Alias soportados por el conector:
+- `created_at` -> `metadata.created`
+- `updated_at` / `last_updated` -> `metadata.last_updated`
+- `value` / `total` -> `total` o `payment.value` o suma de `items[].value` (según módulo)
+Todos los demás campos se eliminan de cada registro para reducir el tamaño de la respuesta.
 
 ### Paginación automática con _todos
 Para traer TODOS los registros (no solo una página), usa `_todos: true`:
@@ -161,10 +166,11 @@ Esto itera por todas las páginas automáticamente y retorna todos los registros
   - Solo después de 3 intentos puedes reportar "sin datos" o "respuesta vacía", incluyendo un resumen corto de los intentos.
 - Campos comunes por módulo para _campos:
   - Clientes: id, identification, id_type, name, person_type, phones, contacts, address, type
-  - Productos: id, code, name, type, prices, taxes, active, stock_control
+  - Productos: id, code, name, type, prices, taxes, active, stock_control, created_at, metadata.created
   - Facturas Venta: id, name, date, total, customer, seller, stamp, items, payments
   - Facturas Compra: id, name, date, total, supplier, items, payments
-  - Cotizaciones: id, name, date, customer, seller, items""",
+  - Cotizaciones: id, name, date, customer, seller, items
+  - Recibos Caja/Pago: id, name, date, type, created_at, value, total, payment, items""",
         chat_client=client,
         tools=SIIGO_TOOLS,
     )
