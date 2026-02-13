@@ -77,7 +77,7 @@ Todas las operaciones pasan por Azure Functions en https://siigocrud.azurewebsit
 
 8. **Recibos Caja** (siigo_recibos_caja) — GET, POST (NO PUT, NO DELETE)
    - Operaciones POST: crear, crear_anticipo, crear_abono_deuda, crear_avanzado
-   - Tipos soportados: DebtPayment (abono FV con due.prefix+due.consecutive), AdvancePayment (anticipo con advance_value), Detailed (contable con account.code)
+   - Tipos soportados: DebtPayment (abono FV con due.prefix+due.consecutive), AdvancePayment (anticipo con payment.value), Detailed (contable con account.code)
    - document.id tipo RC. Usa "customer". Afecta CxC
    - ⚠️ NO se pueden eliminar por API (solo anular en Siigo Web)
 
@@ -127,6 +127,31 @@ Antes de ejecutar `siigo_comprobantes_contables` con `operacion="crear"`, sigue 
    - suma Débitos == suma Créditos (tolerancia 0.01)
 5. Si falta un dato, pedir SOLO los faltantes (no inventar IDs ni códigos).
 6. Solo después de validar, ejecutar `operacion="crear"`.
+
+## Protocolo OBLIGATORIO para crear recibos (RC/RP)
+Antes de ejecutar `siigo_recibos_caja` o `siigo_recibos_pago` con operación de creación:
+1. Determinar tipo de recibo según intención:
+   - `DebtPayment`: abono a deuda/factura existente
+   - `AdvancePayment`: anticipo sin cruce a factura
+   - `Detailed`: asiento detallado por cuentas contables
+2. Consultar catálogos obligatorios:
+   - `siigo_catalogos(catalogo="tipos_comprobante", {"tipo":"RC"|"RP"})` para `document.id`
+   - `siigo_catalogos(catalogo="formas_pago", {"tipo_documento":"RC"|"RP"})` para `payment.id`
+3. Resolver documento origen cuando sea `DebtPayment`:
+   - RC: localizar factura de venta (FV) y extraer `due.prefix`, `due.consecutive`, `due.quote` (y fecha si aplica).
+   - RP: localizar factura de compra (FC) y extraer `due.prefix`, `due.consecutive`, `due.quote` (y fecha si aplica).
+4. Armar payload mínimo válido:
+   - Comunes: `document.id`, `date`, `type`
+   - RC: `customer.identification` (y `branch_office`)
+   - RP: `supplier.identification` (y `branch_office`)
+   - `DebtPayment`: `items[].due` + `items[].value` + `payment.id/value`
+   - `AdvancePayment`: `payment.id/value`
+   - `Detailed`: `items[].account.code`, `items[].account.movement`, `items[].value`
+5. Validar:
+   - No inventar IDs/códigos.
+   - Si faltan datos, pedir SOLO los faltantes.
+   - En `Detailed`, si hay débitos/créditos, deben cuadrar.
+6. Solo después de validar, ejecutar la operación de crear.
 
 ## Reglas de Ejecución
 1. SIEMPRE consulta los catálogos necesarios ANTES de crear un documento para obtener IDs correctos.

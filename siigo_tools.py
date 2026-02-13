@@ -394,6 +394,237 @@ def _validate_comprobante_payload(payload: dict) -> dict | None:
     return None
 
 
+def _normalize_receipt_type(endpoint: str, operacion: str, payload: dict) -> str | None:
+    """
+    Normaliza/infiere el tipo de recibo según operación y estructura del payload.
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    current_type = payload.get("type")
+    if isinstance(current_type, str) and current_type.strip():
+        return current_type.strip()
+
+    if endpoint == "recibos_caja":
+        inferred_by_operation = {
+            "crear_anticipo": "AdvancePayment",
+            "crear_abono_deuda": "DebtPayment",
+            "crear_avanzado": "Detailed",
+        }
+        if operacion in inferred_by_operation:
+            payload["type"] = inferred_by_operation[operacion]
+            return payload["type"]
+
+    items = payload.get("items")
+    if isinstance(items, list) and items:
+        has_due = any(isinstance(i, dict) and isinstance(i.get("due"), dict) for i in items)
+        has_account = any(
+            isinstance(i, dict)
+            and isinstance(i.get("account"), dict)
+            and i.get("account", {}).get("code")
+            for i in items
+        )
+        if has_due:
+            payload["type"] = "DebtPayment"
+            return "DebtPayment"
+        if has_account:
+            payload["type"] = "Detailed"
+            return "Detailed"
+
+    payment = payload.get("payment")
+    if isinstance(payment, dict) and payment.get("value") is not None:
+        payload["type"] = "AdvancePayment"
+        return "AdvancePayment"
+
+    return None
+
+
+def _extract_payment_obj(payload: dict) -> dict | None:
+    """
+    Obtiene forma de pago desde `payment` o primer elemento de `payments`.
+    """
+    payment = payload.get("payment")
+    if isinstance(payment, dict):
+        return payment
+
+    payments = payload.get("payments")
+    if isinstance(payments, list) and payments and isinstance(payments[0], dict):
+        return payments[0]
+
+    return None
+
+
+def _validate_recibo_payload(endpoint: str, operacion: str, payload: dict) -> dict | None:
+    """
+    Valida payload mínimo para crear recibos de caja/pago antes de llamar a SIIGO.
+    """
+    if endpoint not in {"recibos_caja", "recibos_pago"}:
+        return None
+
+    valid_ops = {"crear"}
+    if endpoint == "recibos_caja":
+        valid_ops.update({"crear_anticipo", "crear_abono_deuda", "crear_avanzado"})
+    if operacion not in valid_ops:
+        return None
+
+    if not isinstance(payload, dict):
+        return {
+            "error": "Payload inválido para crear recibo",
+            "detalle": "Debe enviar un objeto JSON con document, date y datos del tercero.",
+            "status_code": 400,
+        }
+
+    receipt_type = _normalize_receipt_type(endpoint, operacion, payload)
+    if receipt_type not in {"DebtPayment", "AdvancePayment", "Detailed"}:
+        return {
+            "error": "Tipo de recibo inválido o faltante",
+            "detalle": "Use type=DebtPayment, AdvancePayment o Detailed (o una operación crear_* válida).",
+            "status_code": 400,
+        }
+
+    missing_fields = []
+    document = payload.get("document")
+    if not isinstance(document, dict) or not document.get("id"):
+        missing_fields.append("document.id")
+    if not payload.get("date"):
+        missing_fields.append("date")
+
+    party_key = "customer" if endpoint == "recibos_caja" else "supplier"
+    party = payload.get(party_key)
+    if not isinstance(party, dict) or not party.get("identification"):
+        missing_fields.append(f"{party_key}.identification")
+    elif "branch_office" not in party:
+        party["branch_office"] = 0
+
+    payment = _extract_payment_obj(payload)
+
+    if receipt_type in {"DebtPayment", "AdvancePayment"}:
+        if not isinstance(payment, dict):
+            missing_fields.append("payment.id")
+            missing_fields.append("payment.value")
+        else:
+            if payment.get("id") in (None, ""):
+                missing_fields.append("payment.id")
+            if payment.get("value") in (None, ""):
+                missing_fields.append("payment.value")
+
+    if missing_fields:
+        return {
+            "error": "Faltan campos obligatorios para crear recibo",
+            "faltantes": missing_fields,
+            "status_code": 400,
+            "sugerencia": [
+                f"Consultar tipos_comprobante tipo={'RC' if endpoint == 'recibos_caja' else 'RP'} para document.id.",
+                f"Consultar formas_pago para tipo_documento={'RC' if endpoint == 'recibos_caja' else 'RP'}.",
+            ],
+        }
+
+    def _to_positive_number(value):
+        try:
+            n = float(value)
+        except (TypeError, ValueError):
+            return None
+        return n if n > 0 else None
+
+    if isinstance(payment, dict) and payment.get("value") is not None:
+        if _to_positive_number(payment.get("value")) is None:
+            return {
+                "error": "payment.value inválido",
+                "detalle": "Debe ser numérico y mayor a 0.",
+                "status_code": 400,
+            }
+
+    items = payload.get("items")
+
+    if receipt_type == "DebtPayment":
+        if not isinstance(items, list) or not items:
+            return {
+                "error": "Faltan items para DebtPayment",
+                "detalle": "Debe enviar items[] con due y value.",
+                "status_code": 400,
+            }
+
+        item_errors = []
+        items_total = 0.0
+        for idx, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                item_errors.append(f"items[{idx}] no es objeto")
+                continue
+            due = item.get("due")
+            if not isinstance(due, dict):
+                item_errors.append(f"items[{idx}].due faltante")
+            else:
+                if not due.get("prefix"):
+                    item_errors.append(f"items[{idx}].due.prefix faltante")
+                if due.get("consecutive") in (None, ""):
+                    item_errors.append(f"items[{idx}].due.consecutive faltante")
+                if due.get("quote") in (None, ""):
+                    due["quote"] = 1
+            val = _to_positive_number(item.get("value"))
+            if val is None:
+                item_errors.append(f"items[{idx}].value inválido")
+            else:
+                items_total += val
+
+        if item_errors:
+            return {"error": "Items inválidos para DebtPayment", "detalle": item_errors, "status_code": 400}
+
+        if isinstance(payment, dict):
+            pay_val = _to_positive_number(payment.get("value"))
+            if pay_val is not None and abs(pay_val - items_total) > 0.01:
+                return {
+                    "error": "Inconsistencia entre payment.value y suma(items[].value)",
+                    "totales": {"payment_value": round(pay_val, 2), "items_total": round(items_total, 2)},
+                    "status_code": 400,
+                }
+
+    if receipt_type == "Detailed":
+        if not isinstance(items, list) or not items:
+            return {
+                "error": "Faltan items para Detailed",
+                "detalle": "Debe enviar items[] con account.code, account.movement y value.",
+                "status_code": 400,
+            }
+
+        item_errors = []
+        debit_total = 0.0
+        credit_total = 0.0
+        has_movement = False
+        for idx, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                item_errors.append(f"items[{idx}] no es objeto")
+                continue
+            account = item.get("account")
+            if not isinstance(account, dict) or not account.get("code"):
+                item_errors.append(f"items[{idx}].account.code faltante")
+                continue
+            movement = str(account.get("movement", "")).strip().lower()
+            val = _to_positive_number(item.get("value"))
+            if val is None:
+                item_errors.append(f"items[{idx}].value inválido")
+                continue
+            if movement == "debit":
+                debit_total += val
+                has_movement = True
+            elif movement == "credit":
+                credit_total += val
+                has_movement = True
+            else:
+                item_errors.append(f"items[{idx}].account.movement inválido (usar Debit/Credit)")
+
+        if item_errors:
+            return {"error": "Items inválidos para Detailed", "detalle": item_errors, "status_code": 400}
+
+        if has_movement and abs(debit_total - credit_total) > 0.01:
+            return {
+                "error": "Partida doble inválida en Detailed: Débitos y Créditos no cuadran",
+                "totales": {"debit": round(debit_total, 2), "credit": round(credit_total, 2)},
+                "status_code": 400,
+            }
+
+    return None
+
+
 def _filter_response_fields(data, campos: list) -> any:
     """
     Filtra la respuesta para incluir solo los campos de nivel superior especificados.
@@ -578,6 +809,10 @@ def _execute_siigo_tool(endpoint: str, operacion: str, parametros_json: str) -> 
         validation_error = _validate_comprobante_payload(params)
         if validation_error:
             return _to_response_str(validation_error)
+
+    receipt_validation_error = _validate_recibo_payload(endpoint, operacion, params)
+    if receipt_validation_error:
+        return _to_response_str(receipt_validation_error)
     
     if method in ("POST", "PUT"):
         query_params = {}
@@ -1070,6 +1305,12 @@ GET consultar_por_nombre: {"nombre": "RC-1-22"}
 
 POST crear - 3 TIPOS de recibo de caja:
 
+FLUJO RECOMENDADO ANTES DE CREAR:
+1) siigo_catalogos(catalogo='tipos_comprobante', parametros='{"tipo":"RC"}') -> tomar document.id
+2) siigo_catalogos(catalogo='formas_pago', parametros='{"tipo_documento":"RC"}') -> tomar payment.id
+3) Si es DebtPayment, localizar la FV y construir due {prefix, consecutive, quote}
+4) Validar type + party + payment + items según el tipo antes de POST
+
 Tipo 1 - DebtPayment (abono a factura de venta):
 {
   "document": {"id": 12345},  // ⚠️ Obtener de tipos_comprobante con tipo=RC
@@ -1096,7 +1337,6 @@ Tipo 2 - AdvancePayment (anticipo de cliente):
   "date": "2024-06-15",
   "type": "AdvancePayment",
   "customer": {"identification": "900123456", "branch_office": 0},
-  "advance_value": 100000,  // Monto del anticipo (en lugar de items con due)
   "payment": {"id": 5678, "value": 100000}
 }
 
@@ -1117,9 +1357,9 @@ Tipo 3 - Detailed (registro contable detallado):
 }
 
 ⚠️ Recibos de caja afectan Cuentas por Cobrar (CxC).
-⚠️ Para DebtPayment necesitas el prefijo y consecutivo de la factura de venta."""] = "{}",
+⚠️ Para DebtPayment necesitas due.prefix + due.consecutive + due.quote de la factura FV."""] = "{}",
 ) -> str:
-    """Gestiona recibos de caja (ingresos) en Siigo Nube. Solo crear y consultar. 3 tipos: DebtPayment (abono a FV con due.prefix/due.consecutive), AdvancePayment (anticipo con advance_value), Detailed (contable con account.code). ⚠️ NO se pueden editar ni eliminar por API."""
+    """Gestiona recibos de caja (ingresos) en Siigo Nube. Solo crear y consultar. 3 tipos: DebtPayment (abono a FV con due), AdvancePayment (anticipo con payment.value), Detailed (contable con account.code). ⚠️ NO se pueden editar ni eliminar por API."""
     return _execute_siigo_tool("recibos_caja", operacion, parametros)
 
 
@@ -1145,6 +1385,12 @@ GET consultar_por_nombre: {"nombre": "RP-1-22"}
 
 POST crear - 3 TIPOS (igual que RC pero para egresos/pagos a proveedores):
 
+FLUJO RECOMENDADO ANTES DE CREAR:
+1) siigo_catalogos(catalogo='tipos_comprobante', parametros='{"tipo":"RP"}') -> tomar document.id
+2) siigo_catalogos(catalogo='formas_pago', parametros='{"tipo_documento":"RP"}') -> tomar payment.id
+3) Si es DebtPayment, localizar la FC y construir due {prefix, consecutive, quote}
+4) Validar type + supplier + payment + items según el tipo antes de POST
+
 Tipo 1 - DebtPayment (pago a factura de compra):
 {
   "document": {"id": 12345},  // ⚠️ Obtener de tipos_comprobante con tipo=RP
@@ -1169,7 +1415,7 @@ Tipo 1 - DebtPayment (pago a factura de compra):
 }
 
 Tipo 2 - AdvancePayment (anticipo a proveedor):
-  Igual que DebtPayment pero type="AdvancePayment" y advance_value en vez de items con due.
+  Igual que DebtPayment pero type="AdvancePayment" y sin due/items.
 
 Tipo 3 - Detailed (registro contable detallado):
   Igual que RC Detailed pero con supplier en vez de customer.
