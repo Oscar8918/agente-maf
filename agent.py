@@ -121,6 +121,7 @@ usa la herramienta `consultar_siigo_erp` y describe claramente lo que se necesit
 ## Instrucciones Importantes
 - Responde siempre en español de manera clara y profesional.
 - Para operaciones de Siigo, pasa toda la información relevante al sub-agente en la consulta.
+- En consultas de lectura de Siigo, solicita reintentos técnicos automáticos (sin pedir confirmación al usuario) cuando la respuesta venga vacía.
 - Para crear registros, primero pregunta los datos necesarios si no los proporciona el usuario.
 - Confirma las operaciones destructivas (eliminar, anular) antes de delegarlas.
 - Si el sub-agente reporta un error, explícalo al usuario y sugiere cómo solucionarlo.""",
