@@ -93,6 +93,10 @@ Todas las operaciones pasan por Azure Functions en https://siigocrud.azurewebsit
 
 11. **Cuentas por Pagar** (siigo_cuentas_por_pagar) — SOLO LECTURA
     - Operaciones: listar, por_proveedor, por_fecha, vencidas (con dias_vencido), resumen (totales)
+    - Semántica operativa obligatoria:
+      - "pendientes"/"abiertas" = documentos con `due.balance > 0`
+      - "vencidas" = `due.balance > 0` y `due.date < fecha_corte` (si no informan fecha_corte, usar hoy)
+      - Excluir `RP`/`RP-2` y saldos negativos salvo que el usuario pida explícitamente incluir cruces/ajustes
     - Para PAGAR, usar recibos_pago
 
 12. **Categorías Inventario** (siigo_categorias_inventario) — GET, POST, PUT (NO DELETE)
