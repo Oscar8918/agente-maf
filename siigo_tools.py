@@ -497,11 +497,26 @@ def _execute_siigo_tool(endpoint: str, operacion: str, parametros_json: str) -> 
     else:
         # GET - soportar paginación automática
         if paginar_todo:
+            def _extract_results_payload(raw_page):
+                """
+                Extrae (results, pagination, wrapped_mode) soportando:
+                - {"results":[...], "pagination": {...}}
+                - {"success": true, "data": {"results":[...], "pagination": {...}}}
+                """
+                if isinstance(raw_page, dict):
+                    if "results" in raw_page:
+                        return raw_page.get("results", []), raw_page.get("pagination", {}), False
+                    data_payload = raw_page.get("data")
+                    if isinstance(data_payload, dict) and "results" in data_payload:
+                        return data_payload.get("results", []), data_payload.get("pagination", {}), True
+                return None, None, None
+
             all_results = []
             page = int(params.get("page", 1))
             page_size = int(params.get("page_size", 25))
             params["page_size"] = str(page_size)
             max_pages = 20  # Límite de seguridad
+            wrapped_mode = False
             
             for _ in range(max_pages):
                 params["page"] = str(page)
@@ -509,25 +524,27 @@ def _execute_siigo_tool(endpoint: str, operacion: str, parametros_json: str) -> 
                 
                 if isinstance(page_data, dict) and "error" in page_data:
                     return _to_response_str(page_data)
-                
-                if isinstance(page_data, dict) and "results" in page_data:
-                    results = page_data.get("results", [])
-                    all_results.extend(results)
-                    pagination = page_data.get("pagination", {})
-                    total = pagination.get("total_results", 0)
-                    if len(all_results) >= total or len(results) < page_size:
-                        break
-                    page += 1
-                else:
+
+                results, pagination, page_wrapped_mode = _extract_results_payload(page_data)
+                if results is None:
                     # Respuesta sin formato estándar, retornar tal cual
                     if campos:
                         page_data = _filter_response_fields(page_data, campos)
                     return _to_response_str(page_data)
+
+                wrapped_mode = wrapped_mode or bool(page_wrapped_mode)
+                all_results.extend(results)
+                total = pagination.get("total_results", 0)
+
+                if (total and len(all_results) >= total) or len(results) < page_size:
+                    break
+                page += 1
             
-            data = {
+            consolidated_payload = {
                 "pagination": {"total_results": len(all_results), "page": 1, "page_size": len(all_results)},
-                "results": all_results
+                "results": all_results,
             }
+            data = {"success": True, "data": consolidated_payload} if wrapped_mode else consolidated_payload
         else:
             data = _call_siigo(endpoint, operacion, method, query_params=params)
     
