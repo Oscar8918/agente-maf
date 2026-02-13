@@ -305,6 +305,95 @@ def _normalize_list_filters(endpoint: str, operacion: str, params: dict) -> dict
     return normalized
 
 
+def _validate_comprobante_payload(payload: dict) -> dict | None:
+    """
+    Valida payload mínimo para crear comprobantes contables antes de llamar a SIIGO.
+    Retorna dict de error si es inválido, o None si es válido.
+    """
+    if not isinstance(payload, dict):
+        return {
+            "error": "Payload inválido para crear comprobante contable",
+            "detalle": "Debe enviar un objeto JSON con document, date e items.",
+            "status_code": 400,
+        }
+
+    missing_fields = []
+    document = payload.get("document")
+    if not isinstance(document, dict) or not document.get("id"):
+        missing_fields.append("document.id")
+    if not payload.get("date"):
+        missing_fields.append("date")
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        missing_fields.append("items[]")
+
+    if missing_fields:
+        return {
+            "error": "Faltan campos obligatorios para crear comprobante contable",
+            "faltantes": missing_fields,
+            "status_code": 400,
+            "sugerencia": [
+                "Consultar tipos_comprobante con tipo=CC para obtener document.id.",
+                "Consultar cuentas_contables para validar account.code.",
+                "Asegurar items con account.movement (Debit/Credit) y value.",
+            ],
+        }
+
+    debit_total = 0.0
+    credit_total = 0.0
+    invalid_items = []
+
+    for idx, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            invalid_items.append(f"items[{idx}] no es objeto")
+            continue
+
+        account = item.get("account")
+        movement = ""
+        if isinstance(account, dict):
+            movement = str(account.get("movement", "")).strip()
+            if not account.get("code"):
+                invalid_items.append(f"items[{idx}].account.code faltante")
+        else:
+            invalid_items.append(f"items[{idx}].account faltante")
+
+        value = item.get("value")
+        try:
+            value_num = float(value)
+        except (TypeError, ValueError):
+            invalid_items.append(f"items[{idx}].value inválido")
+            continue
+
+        if value_num <= 0:
+            invalid_items.append(f"items[{idx}].value debe ser mayor a 0")
+            continue
+
+        movement_lc = movement.lower()
+        if movement_lc == "debit":
+            debit_total += value_num
+        elif movement_lc == "credit":
+            credit_total += value_num
+        else:
+            invalid_items.append(f"items[{idx}].account.movement inválido (usar Debit/Credit)")
+
+    if invalid_items:
+        return {
+            "error": "Items inválidos en comprobante contable",
+            "detalle": invalid_items,
+            "status_code": 400,
+        }
+
+    if abs(debit_total - credit_total) > 0.01:
+        return {
+            "error": "Partida doble inválida: Débitos y Créditos no cuadran",
+            "totales": {"debit": round(debit_total, 2), "credit": round(credit_total, 2)},
+            "status_code": 400,
+            "sugerencia": "Ajusta items hasta que total Debit == total Credit.",
+        }
+
+    return None
+
+
 def _filter_response_fields(data, campos: list) -> any:
     """
     Filtra la respuesta para incluir solo los campos de nivel superior especificados.
@@ -484,6 +573,11 @@ def _execute_siigo_tool(endpoint: str, operacion: str, parametros_json: str) -> 
                 "sugerencia": "Crea una nueva nota crédito o realiza ajustes desde Siigo Web.",
             }
         )
+
+    if endpoint == "comprobantes_contables" and operacion == "crear":
+        validation_error = _validate_comprobante_payload(params)
+        if validation_error:
+            return _to_response_str(validation_error)
     
     if method in ("POST", "PUT"):
         query_params = {}
@@ -1109,6 +1203,12 @@ POST:
 GET listar: {"page": "1", "page_size": "25", "date_start": "2024-01-01", "date_end": "2024-12-31"}
 GET consultar_por_id: {"id": "abc123"}
 GET consultar_por_nombre: {"nombre": "CC-1-22"}
+
+FLUJO RECOMENDADO ANTES DE CREAR:
+1) siigo_catalogos(catalogo='tipos_comprobante', parametros='{"tipo":"CC"}') -> tomar document.id
+2) siigo_comprobantes_contables(operacion='cuentas_contables') -> validar account.code
+3) (Opcional) centros_costo / impuestos / activos_fijos si el asiento los usa
+4) Validar partida doble (debitos = creditos) antes de enviar POST
 
 POST crear - REGLA FUNDAMENTAL: Total Débitos DEBE ser igual a Total Créditos (partida doble)
 {

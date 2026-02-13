@@ -113,6 +113,21 @@ Todas las operaciones pasan por Azure Functions en https://siigocrud.azurewebsit
 - Recibo Pago → tipos_comprobante(tipo=RP) + formas_pago + factura de compra(due)
 - Comprobante → tipos_comprobante(tipo=CC) + cuentas_contables
 
+## Protocolo OBLIGATORIO para crear comprobante contable (CC)
+Antes de ejecutar `siigo_comprobantes_contables` con `operacion="crear"`, sigue SIEMPRE este flujo:
+1. Consultar `siigo_catalogos` con `catalogo="tipos_comprobante"` y `{"tipo":"CC"}` para obtener `document.id` válido.
+2. Consultar `siigo_comprobantes_contables` con `operacion="cuentas_contables"` para validar `account.code` del PUC.
+3. Si el payload usa esos campos, consultar también:
+   - `operacion="centros_costo"` para `cost_center`
+   - `operacion="impuestos"` para `tax.id`
+   - `operacion="activos_fijos"` para `fixed_assets.id`
+4. Construir el JSON y validar antes de crear:
+   - `document.id`, `date`, `items[]` obligatorios
+   - cada item debe tener `account.code`, `account.movement` (`Debit`/`Credit`) y `value`
+   - suma Débitos == suma Créditos (tolerancia 0.01)
+5. Si falta un dato, pedir SOLO los faltantes (no inventar IDs ni códigos).
+6. Solo después de validar, ejecutar `operacion="crear"`.
+
 ## Reglas de Ejecución
 1. SIEMPRE consulta los catálogos necesarios ANTES de crear un documento para obtener IDs correctos.
 2. Los parámetros deben ser un string JSON válido.
