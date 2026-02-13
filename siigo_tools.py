@@ -269,6 +269,42 @@ def _parse_parametros(parametros_json: str) -> dict:
         return {"_parse_error": "parametros_json_invalido"}
 
 
+def _normalize_list_filters(endpoint: str, operacion: str, params: dict) -> dict:
+    """
+    Normaliza alias de filtros de fecha en operaciones listar para evitar
+    vacíos por usar claves no esperadas por cada endpoint.
+    """
+    if operacion != "listar" or not isinstance(params, dict):
+        return params
+
+    normalized = dict(params)
+
+    # Endpoints orientados a fecha de documento.
+    date_based = {"facturas_venta", "facturas_compra", "comprobantes_contables"}
+    if endpoint in date_based:
+        if "created_start" in normalized and "date_start" not in normalized:
+            normalized["date_start"] = normalized["created_start"]
+        if "created_end" in normalized and "date_end" not in normalized:
+            normalized["date_end"] = normalized["created_end"]
+
+    # Endpoints orientados a fecha de creación/actualización.
+    created_based = {
+        "clientes",
+        "productos",
+        "notas_credito",
+        "cotizaciones",
+        "recibos_caja",
+        "recibos_pago",
+    }
+    if endpoint in created_based:
+        if "date_start" in normalized and "created_start" not in normalized:
+            normalized["created_start"] = normalized["date_start"]
+        if "date_end" in normalized and "created_end" not in normalized:
+            normalized["created_end"] = normalized["date_end"]
+
+    return normalized
+
+
 def _filter_response_fields(data, campos: list) -> any:
     """
     Filtra la respuesta para incluir solo los campos de nivel superior especificados.
@@ -358,6 +394,7 @@ def _execute_siigo_tool(endpoint: str, operacion: str, parametros_json: str) -> 
     operacion = _normalize_operation(endpoint, operacion)
     method = _detect_method(operacion)
     params = _parse_parametros(parametros_json)
+    params = _normalize_list_filters(endpoint, operacion, params)
 
     if "_parse_error" in params:
         return _to_response_str(
