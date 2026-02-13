@@ -272,7 +272,11 @@ def _parse_parametros(parametros_json: str) -> dict:
 def _filter_response_fields(data, campos: list) -> any:
     """
     Filtra la respuesta para incluir solo los campos de nivel superior especificados.
-    Soporta respuestas con formato {"results": [...], "pagination": {...}} y listas planas.
+    Soporta respuestas con formato:
+    - {"results": [...], "pagination": {...}}
+    - {"success": true, "data": {"results": [...], "pagination": {...}}}
+    - {"success": true, "data": [...]}
+    - listas planas
     """
     def filter_record(record):
         if not isinstance(record, dict):
@@ -280,6 +284,29 @@ def _filter_response_fields(data, campos: list) -> any:
         return {k: v for k, v in record.items() if k in campos}
     
     if isinstance(data, dict):
+        # Formato común del backend SIIGO: {"success": true, "data": ...}
+        if "data" in data:
+            filtered = dict(data)
+            data_payload = data.get("data")
+
+            if isinstance(data_payload, dict) and "results" in data_payload:
+                nested = {}
+                if "pagination" in data_payload:
+                    nested["pagination"] = data_payload["pagination"]
+                nested["results"] = [filter_record(r) for r in data_payload.get("results", [])]
+                filtered["data"] = nested
+                return filtered
+
+            if isinstance(data_payload, list):
+                filtered["data"] = [filter_record(r) for r in data_payload]
+                return filtered
+
+            if isinstance(data_payload, dict):
+                filtered["data"] = filter_record(data_payload)
+                return filtered
+
+            return filtered
+
         if "results" in data:
             filtered = {}
             if "pagination" in data:
